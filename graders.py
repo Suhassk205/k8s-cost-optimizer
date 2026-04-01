@@ -52,18 +52,21 @@ class ColdStartGrader:
             trajectory: List of trajectory steps
         
         Returns:
-            float: Score in [0.0, 1.0]
-        
-        Implementation plan:
-            1. Check: if not trajectory: return 0.0
-            2. Iterate through trajectory steps
-            3. Collect http_error_rate from each observation
-            4. Compute average error rate
-            5. score = 1.0 - avg_error_rate
-            6. Return max(0.0, min(1.0, score))
+            float: Score in [0.0, 1.0] (strictly bounded)
         """
-        # STUB: Compute and return normalized score
-        pass
+        # Empty trajectory → 0.0
+        if not trajectory:
+            return 0.0
+        
+        # Compute average http_error_rate
+        error_rates = [step.observation.http_error_rate for step in trajectory]
+        avg_error_rate = sum(error_rates) / len(error_rates) if error_rates else 0.0
+        
+        # Score formula: 1.0 - avg_error_rate
+        score = 1.0 - avg_error_rate
+        
+        # CRITICAL: Strictly clamp to [0.0, 1.0]
+        return max(0.0, min(1.0, score))
 
 
 class EfficientSqueezeGrader:
@@ -108,17 +111,23 @@ class EfficientSqueezeGrader:
             trajectory: List of trajectory steps
         
         Returns:
-            float: Score in [0.0, 1.0]
-        
-        Implementation plan:
-            1. Check: if not trajectory: return 0.0
-            2. Scan trajectory: count steps where cpu_steal_pct >= 0.20
-            3. violations = count
-            4. score = 1.0 - (violations / len(trajectory))
-            5. Return max(0.0, min(1.0, score))
+            float: Score in [0.0, 1.0] (strictly bounded)
         """
-        # STUB: Compute and return normalized score
-        pass
+        # Empty trajectory → 0.0
+        if not trajectory:
+            return 0.0
+        
+        # Count violations: cpu_steal_pct >= 0.20
+        violations = sum(
+            1 for step in trajectory 
+            if step.observation.cpu_steal_pct >= 0.20
+        )
+        
+        # Score formula: 1.0 - (violations / len(trajectory))
+        score = 1.0 - (violations / len(trajectory))
+        
+        # CRITICAL: Strictly clamp to [0.0, 1.0]
+        return max(0.0, min(1.0, score))
 
 
 class EntropyStormGrader:
@@ -172,18 +181,38 @@ class EntropyStormGrader:
             trajectory: List of trajectory steps
         
         Returns:
-            float: Score in [0.0, 1.0]
-        
-        Implementation plan:
-            1. Check: if not trajectory: return 0.0
-            2. Identify violations: cpu_steal_pct >= 0.20
-            3. If no violations: return 1.0 (agent avoided problem)
-            4. For each violation:
-               - Look back up to k steps for REBALANCE_NODE action
-               - Count successful proactive actions
-            5. success_rate = proactive_actions / total_violations
-            6. score = success_rate (no bonus for reactive scaling in this task)
-            7. Return max(0.0, min(1.0, score))
+            float: Score in [0.0, 1.0] (strictly bounded)
         """
-        # STUB: Compute and return normalized score
-        pass
+        # Empty trajectory → 0.0
+        if not trajectory:
+            return 0.0
+        
+        # Identify violations: cpu_steal_pct >= 0.20
+        violations = [
+            i for i, step in enumerate(trajectory)
+            if step.observation.cpu_steal_pct >= 0.20
+        ]
+        
+        # No violations → 1.0 (agent avoided the problem)
+        if not violations:
+            return 1.0
+        
+        # For each violation, check if REBALANCE_NODE occurred in lookback window
+        proactive_count = 0
+        lookback_window = 5  # Spec: look back up to 5 steps before violation
+        
+        for violation_idx in violations:
+            # Check actions in window [max(0, violation_idx - lookback_window), violation_idx - 1]
+            window_start = max(0, violation_idx - lookback_window)
+            window_steps = trajectory[window_start:violation_idx]
+            
+            # Check if REBALANCE_NODE occurred in this window
+            if any(step.action == ActionType.REBALANCE_NODE for step in window_steps):
+                proactive_count += 1
+        
+        # Success rate: proactive_count / total_violations
+        success_rate = proactive_count / max(1, len(violations))
+        score = success_rate
+        
+        # CRITICAL: Strictly clamp to [0.0, 1.0]
+        return max(0.0, min(1.0, score))

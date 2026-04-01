@@ -103,10 +103,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables
-export GOOGLE_API_KEY="your-api-key-here"
-export HF_TOKEN="hf_..."
-export MODEL_NAME="gemini-2.5-flash"  # Optional, default
+# Set environment variables (REQUIRED - see Pre-Submission Checklist below)
+export API_BASE_URL="https://api.openai.com/v1"
+export MODEL_NAME="gpt-4"
+export HF_TOKEN="hf_..."  # Your HuggingFace token
 
 # Run local validation
 python validate_local.py
@@ -121,11 +121,11 @@ python inference.py
 # Build image
 docker build -t kubecost-gym .
 
-# Run container
+# Run container with required env vars
 docker run \
-  -e GOOGLE_API_KEY="your-api-key" \
+  -e API_BASE_URL="https://api.openai.com/v1" \
+  -e MODEL_NAME="gpt-4" \
   -e HF_TOKEN="hf_..." \
-  -e MODEL_NAME="gemini-2.5-flash" \
   kubecost-gym
 ```
 
@@ -145,8 +145,9 @@ git remote add origin <space-repo>
 cp -r ../ ./
 
 # Setup Secrets in Space UI:
-# - GOOGLE_API_KEY
-# - HF_TOKEN
+# - API_BASE_URL
+# - MODEL_NAME
+# - HF_TOKEN (validator uses this)
 
 # Push to deploy
 git add .
@@ -156,13 +157,167 @@ git push origin main
 
 ---
 
-## Environment Variables
+## Pre-Submission Checklist
 
-| Variable         | Required | Example                        |
-| ---------------- | -------- | ------------------------------ |
-| `GOOGLE_API_KEY` | Yes      | `AIzaS...` (Google Gemini API) |
-| `HF_TOKEN`       | Yes      | `hf_...` (HuggingFace token)   |
-| `MODEL_NAME`     | No       | `gemini-2.5-flash` (default)   |
+**CRITICAL:** Before hitting "Submit" on the assessment link, verify these items or you will be disqualified.
+
+### ✓ Environment Variables (Must Pass)
+
+All three required variables must be set and use `os.environ.get()`:
+
+```python
+# ✓ CORRECT
+api_base_url = os.environ.get("API_BASE_URL")
+model_name = os.environ.get("MODEL_NAME")
+hf_token = os.environ.get("HF_TOKEN")
+
+# ✗ WRONG (hardcoded)
+api_base_url = "https://api.openai.com/v1"  # ← DISQUALIFIED
+hf_token = "hf_abc123..."  # ← DISQUALIFIED
+```
+
+| Variable        | Required | Example                        | Purpose                           |
+| --------------- | -------- | ------------------------------ | --------------------------------- |
+| `API_BASE_URL`  | **YES**  | `https://api.openai.com/v1`   | The API endpoint for the LLM      |
+| `MODEL_NAME`    | **YES**  | `gpt-4` or provider-specific   | The model identifier to use       |
+| `HF_TOKEN`      | **YES**  | `hf_...` (validator provides)  | HuggingFace / API token           |
+
+### ✓ Inference Script Location (Must Pass)
+
+```
+✓ Accepted:
+  k8s-cost-optimizer/inference.py
+
+✗ REJECTED (hidden in subdirectory):
+  k8s-cost-optimizer/scripts/inference.py
+  k8s-cost-optimizer/src/inference.py
+```
+
+**Automated grader will fail immediately if not in root.**
+
+### ✓ Grader Output Bounds (Must Pass)
+
+All graders must return scores strictly in [0.0, 1.0]:
+
+```python
+# ✓ CORRECT (clamped)
+def grade(self, trajectory):
+    score = calculate_score(trajectory)
+    return max(0.0, min(1.0, score))  # ← Always clamp
+
+# ✗ WRONG (unbounded)
+def grade(self, trajectory):
+    return 1.5  # ← FAILS validation
+    # or
+    score = 1.0
+    score -= 0.05  # per something ← Unbounded!
+    return score
+```
+
+**Double-check in graders.py:**
+- `ColdStartGrader.grade()` returns [0.0, 1.0]
+- `EfficientSqueezeGrader.grade()` returns [0.0, 1.0]
+- `EntropyStormGrader.grade()` returns [0.0, 1.0]
+
+### ✓ OpenAI Client Usage (Must Pass)
+
+All LLM calls must use OpenAI Client (not Google Gemini):
+
+```python
+# ✓ CORRECT
+from openai import OpenAI
+client = OpenAI(api_key=os.environ.get("HF_TOKEN"), base_url=api_base_url)
+response = client.chat.completions.create(model=model_name, messages=[...])
+
+# ✗ WRONG (Google Gemini)
+import google.generativeai as genai  # ← DISQUALIFIED
+model = genai.GenerativeModel("gemini-2.5-flash")
+```
+
+### ✓ 3+ Graders Present (Must Pass)
+
+All three tasks must have working graders:
+
+```python
+from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
+
+# ✓ All three defined and callable
+tasks = [
+    ("cold_start", ColdStartGrader()),
+    ("efficient_squeeze", EfficientSqueezeGrader()),
+    ("entropy_storm", EntropyStormGrader()),
+]
+```
+
+### ✓ OpenEnv Spec Compliance (Must Pass)
+
+Validate `openenv.yaml` structure:
+
+```yaml
+name: kubecost-gym
+version: "3.0"  # ← String, not float!
+description: "..."
+tasks:
+  - name: cold_start
+    difficulty: easy
+    description: "..."
+  - name: efficient_squeeze
+    difficulty: medium
+    description: "..."
+  - name: entropy_storm
+    difficulty: hard
+    description: "..."
+```
+
+### ✓ Dockerfile Builds (Must Pass)
+
+```bash
+docker build -t kubecost-gym .
+# Must complete without errors
+```
+
+Dockerfile must:
+- Build from `python:3.10-slim`
+- Copy `inference.py` from root
+- Verify `inference.py` exists: `test -f inference.py || exit 1`
+
+### ✓ Baseline Reproducibility (Must Pass)
+
+Run submitted inference script—must complete without error:
+
+```bash
+export API_BASE_URL="https://api.openai.com/v1"
+export MODEL_NAME="gpt-4"
+export HF_TOKEN="hf_xyz..."
+python inference.py
+# Exit code: 0 (success)
+# No unhandled exceptions
+```
+
+### ✓ Infra Requirements (Must Pass)
+
+- **Runtime:** < 20 minutes on vcpu=2, memory=8gb
+- **No hardcoded credentials:** Use `os.environ.get()`
+- **Stateless inference:** No side effects, reproducible
+
+### ✓ Run Local Validator
+
+```bash
+python validate_local.py
+# All checks must PASS (green ✓)
+```
+
+This validates:
+- Syntax errors
+- Environment variable patterns
+- Grader bounds
+- OpenAI Client usage
+- File locations
+- Dockerfile structure
+
+---
+
+## Environment Variables
 
 ---
 
@@ -264,19 +419,26 @@ This project implements all 5 SDD phases:
 
 ## Validation
 
-Run pre-submission checks:
+Run pre-submission checks **before** submitting:
 
 ```bash
 python validate_local.py
 ```
 
-Validates:
+This validates the critical gates:
 
 - ✓ All modules import without syntax errors
-- ✓ openenv.yaml parses and has required fields
-- ✓ All graders return [0.0, 1.0]
-- ✓ inference.py exists in root
-- ✓ No stub bodies remain (no bare `pass`)
+- ✓ openenv.yaml parses and has required fields (3 tasks)
+- ✓ All graders enforce [0.0, 1.0] bounds
+- ✓ Environment variables use `os.environ.get()`
+- ✓ OpenAI Client imported (not Google Gemini)
+- ✓ inference.py exists in root directory
+- ✓ requirements.txt has OpenAI (not google-generativeai)
+- ✓ Dockerfile includes critical checks
+- ✓ No hardcoded credentials detected
+- ✓ Traces directory ready
+
+**Must pass all checks before submission** or you will be disqualified.
 
 ---
 
@@ -296,13 +458,17 @@ This implementation incorporates all 5 audit fixes from the specification:
 
 ## Common Mistakes to Avoid
 
-| Mistake                      | Impact                  | Prevention                       |
-| ---------------------------- | ----------------------- | -------------------------------- |
-| inference.py in subdirectory | Validator fails         | Keep in root, never move         |
-| Grader score > 1.0           | Unbounded               | Normalize by trajectory length   |
-| Float equality `== 0.0`      | Fails on 1e-15          | Use `< tolerance` always         |
-| Sparse reward cliff          | No gradient             | Add linear ramp before threshold |
-| Unsolvable hard task         | Structurally impossible | Verify action space complete     |
+| Mistake                                  | Impact                    | Prevention                                       |
+| ---------------------------------------- | ------------------------- | ------------------------------------------------ |
+| inference.py in subdirectory             | **DISQUALIFIED**          | Keep in root, never move                         |
+| Hardcoded API key/token                  | **DISQUALIFIED**          | Always use `os.environ.get(key)`                 |
+| Grader score > 1.0 or < 0.0              | **DISQUALIFIED**          | Normalize by trajectory length + clamp           |
+| Using Google Gemini instead of OpenAI    | **DISQUALIFIED**          | `from openai import OpenAI`                      |
+| Wrong environment variable names         | **DISQUALIFIED**          | Must be `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN` |
+| Float equality `== 0.0`                  | Fails edge cases           | Use `< tolerance` always                         |
+| Sparse reward cliff                      | No gradient               | Add linear ramp before threshold                 |
+| Unsolvable hard task                     | Structurally impossible   | Verify action space complete                     |
+| Unbounded grader accumulation            | Invalid scores (>1.0)     | Normalize: `1.0 - (violations / len(trajectory))` |
 
 ---
 
