@@ -87,33 +87,195 @@ The agent selects from 9 discrete actions:
 
 ---
 
-## Setup Instructions
+## Known Limitations & Troubleshooting
 
-### Local Development
+### Critical Fixes Applied (Phase 4 Remediation)
+
+This codebase has been aggressively reviewed and fixed for the following critical issues:
+
+#### 1. Physics Overlay Removed (Fix #1)
+
+✅ **Status:** Fixed
+
+- **Issue:** Observations were being modified by formula overlays, breaking determinism
+- **Resolution:** Observations now come directly from traces with NO modifications
+- **Impact:** All traces are now ground truth; reproducibility guaranteed
+
+#### 2. Cost Penalty Bounded (Fix #2)
+
+✅ **Status:** Fixed
+
+- **Issue:** Cost penalty could exceed 5.0 in reward formula, breaking bounds
+- **Resolution:** Cost penalty now clamped: `min(5.0, 5.0 * cost_fraction)`
+- **Impact:** Reward strictly bounded to [-20.0, +10.5]
+
+#### 3. Proactive Bonus Timing Fixed (Fix #3)
+
+✅ **Status:** Fixed
+
+- **Issue:** Previous steal comparison was off-by-one
+- **Resolution:** Steal snapshot captured after step advances, before reward calc
+- **Impact:** Task 3 learning signal now correct
+
+#### 4. EntropyStormGrader Logic Fixed (Fix #4)
+
+✅ **Status:** Fixed
+
+- **Issue:** Passive agents could score 1.0 with no violations
+- **Resolution:** Requires REBALANCE actions for perfect score when no violations occur
+- **Impact:** Prevents reward hacking; encourages proactive behavior
+
+#### 5. Episode Termination Fixed (Fix #5)
+
+✅ **Status:** Fixed
+
+- **Issue:** Episodes didn't terminate at trace end, causing duplicate observations
+- **Resolution:** Early exit when `_step >= total_steps`
+- **Impact:** No more wrapped observations in Task 2 & 3 grading
+
+#### 6. Pydantic Config Standardized (Fix #9)
+
+✅ **Status:** Fixed
+
+- **Issue:** Inconsistent `use_enum_values` across models
+- **Resolution:** All models now use `use_enum_values = True`
+- **Impact:** Consistent JSON serialization; LLM response parsing more reliable
+
+#### 7. LLM Response Parsing Enhanced (Fix #10)
+
+✅ **Status:** Fixed
+
+- **Issue:** Couldn't handle markdown code blocks, failed on name vs. value mismatches
+- **Resolution:** Robust parsing with markdown handling, name/value fallback, validation
+- **Impact:** Inference more reliable even with LLM formatting variations
+
+#### 8. Environment Validation Enhanced (Fix #12)
+
+✅ **Status:** Fixed
+
+- **Issue:** Env vars checked for existence but not format
+- **Resolution:** URL format validation, token length checks
+- **Impact:** Configuration errors caught early with clear messages
+
+#### 9. Inference Main Completed (Fix #13)
+
+✅ **Status:** Fixed
+
+- **Issue:** Main function incomplete, missing result output
+- **Resolution:** Full results collection, file output, exit codes
+- **Impact:** Inference pipeline is production-ready
+
+#### 10. Empty Trajectory Error Logging (Fix #8)
+
+✅ **Status:** Fixed
+
+- **Issue:** Empty trajectories silently returned 0.0
+- **Resolution:** Error logging in graders, trajectory validation in inference
+- **Impact:** Failures surface immediately instead of being silent
+
+### Performance Considerations
+
+#### Traces Are Minimal Fixtures
+
+⚠️ **Note:** Current traces (5-6 steps) are for rapid testing only.
+
+**For production:**
+
+- Traces should be 50+ steps (realistic time horizons)
+- Should be recorded from real K8s clusters or high-fidelity simulators
+- Should include diverse failure modes (cascades, oscillations, network failures)
+
+#### LLM Integration Constraints
+
+- **Timeout:** 30 seconds per LLM decision (prevents hangs)
+- **Fallback:** If LLM fails to parse: defaults to MAINTAIN (safe)
+- **Tested:** OpenAI API only; other providers may require adapter code
+
+### Design Notes
+
+#### Observation Immutability
+
+Observations are taken DIRECTLY from traces with NO formula overlays:
+
+- Agent actions (SCALE_REPLICAS, etc.) do NOT modify observations in the current step
+- Consequences are modeled in future trace steps (or can be)
+- To enable action feedback in observations, regenerate traces with action-dependent dynamics
+
+#### Task-Specific Scoring
+
+**Task 1: Cold Start (Easy)**
+
+- **Metric:** Average HTTP error rate
+- **Score:** `1.0 - avg_error_rate`
+- **Pass:** Score > 0.8
+
+**Task 2: Efficient Squeeze (Medium)**
+
+- **Metric:** CPU steal violations (steal_pct >= 0.20)
+- **Score:** `1.0 - (violations / len(trajectory))`
+- **Pass:** Score > 0.7
+
+**Task 3: Entropy Storm (Hard)**
+
+- **Metric:** Proactive REBALANCE actions within 5 steps before steal violation
+- **Score:** `proactive_actions / total_violations` (or 0.5+ if no violations and passive)
+- **Pass:** Score > 0.6
+
+See [PROJECT_SPEC.md](PROJECT_SPEC.md) for full scoring formulas.
+
+### Running Tests
 
 ```bash
-# Clone repository
-git clone <repo-url>
-cd k8s-cost-optimizer
+# Install test dependencies
+pip install pytest pytest-cov
 
-# Create Python 3.10+ environment
-python3.10 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Run all tests
+pytest tests/ -v
+
+# Run specific test file
+pytest tests/test_graders.py -v
+
+# Run with coverage
+pytest tests/ --cov=. --cov-report=html
+```
+
+### Troubleshooting Common Issues
+
+**Q: Grader returns 0.0 on every episode**
+A: Check that trajectory is non-empty. If still 0.0, ensure observations have valid values. Enable stderr to see error logs.
+
+**Q: LLM inference hangs**
+A: Check API_BASE_URL is correct and accessible. Default timeout is 30s; increase if needed.
+
+**Q: EntropyStormGrader scores < 0.5 even with REBALANCE actions**
+A: Verify REBALANCE was issued within 5-step lookback window BEFORE steal violation appears.
+
+**Q: Cost penalty seems high**
+A: Cost is clamped at 5.0 per step. If hourly_cost > BUDGET, penalty = 5.0. Check trace cost values.
+
+---
+
+source venv/bin/activate # On Windows: venv\Scripts\activate
 
 # Install dependencies
+
 pip install -r requirements.txt
 
 # Set environment variables (REQUIRED - see Pre-Submission Checklist below)
-export API_BASE_URL="https://api.openai.com/v1"
+
+export API*BASE_URL="https://api.openai.com/v1"
 export MODEL_NAME="gpt-4"
-export HF_TOKEN="hf_..."  # Your HuggingFace token
+export HF_TOKEN="hf*..." # Your HuggingFace token
 
 # Run local validation
+
 python validate_local.py
 
 # Run inference pipeline
+
 python inference.py
-```
+
+````
 
 ### Docker Deployment
 
@@ -127,7 +289,7 @@ docker run \
   -e MODEL_NAME="gpt-4" \
   -e HF_TOKEN="hf_..." \
   kubecost-gym
-```
+````
 
 ### HuggingFace Spaces Deployment
 
@@ -176,11 +338,11 @@ api_base_url = "https://api.openai.com/v1"  # ← DISQUALIFIED
 hf_token = "hf_abc123..."  # ← DISQUALIFIED
 ```
 
-| Variable        | Required | Example                        | Purpose                           |
-| --------------- | -------- | ------------------------------ | --------------------------------- |
-| `API_BASE_URL`  | **YES**  | `https://api.openai.com/v1`   | The API endpoint for the LLM      |
-| `MODEL_NAME`    | **YES**  | `gpt-4` or provider-specific   | The model identifier to use       |
-| `HF_TOKEN`      | **YES**  | `hf_...` (validator provides)  | HuggingFace / API token           |
+| Variable       | Required | Example                       | Purpose                      |
+| -------------- | -------- | ----------------------------- | ---------------------------- |
+| `API_BASE_URL` | **YES**  | `https://api.openai.com/v1`   | The API endpoint for the LLM |
+| `MODEL_NAME`   | **YES**  | `gpt-4` or provider-specific  | The model identifier to use  |
+| `HF_TOKEN`     | **YES**  | `hf_...` (validator provides) | HuggingFace / API token      |
 
 ### ✓ Inference Script Location (Must Pass)
 
@@ -215,6 +377,7 @@ def grade(self, trajectory):
 ```
 
 **Double-check in graders.py:**
+
 - `ColdStartGrader.grade()` returns [0.0, 1.0]
 - `EfficientSqueezeGrader.grade()` returns [0.0, 1.0]
 - `EntropyStormGrader.grade()` returns [0.0, 1.0]
@@ -255,7 +418,7 @@ Validate `openenv.yaml` structure:
 
 ```yaml
 name: kubecost-gym
-version: "3.0"  # ← String, not float!
+version: "3.0" # ← String, not float!
 description: "..."
 tasks:
   - name: cold_start
@@ -277,6 +440,7 @@ docker build -t kubecost-gym .
 ```
 
 Dockerfile must:
+
 - Build from `python:3.10-slim`
 - Copy `inference.py` from root
 - Verify `inference.py` exists: `test -f inference.py || exit 1`
@@ -308,6 +472,7 @@ python validate_local.py
 ```
 
 This validates:
+
 - Syntax errors
 - Environment variable patterns
 - Grader bounds
@@ -458,17 +623,17 @@ This implementation incorporates all 5 audit fixes from the specification:
 
 ## Common Mistakes to Avoid
 
-| Mistake                                  | Impact                    | Prevention                                       |
-| ---------------------------------------- | ------------------------- | ------------------------------------------------ |
-| inference.py in subdirectory             | **DISQUALIFIED**          | Keep in root, never move                         |
-| Hardcoded API key/token                  | **DISQUALIFIED**          | Always use `os.environ.get(key)`                 |
-| Grader score > 1.0 or < 0.0              | **DISQUALIFIED**          | Normalize by trajectory length + clamp           |
-| Using Google Gemini instead of OpenAI    | **DISQUALIFIED**          | `from openai import OpenAI`                      |
-| Wrong environment variable names         | **DISQUALIFIED**          | Must be `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN` |
-| Float equality `== 0.0`                  | Fails edge cases           | Use `< tolerance` always                         |
-| Sparse reward cliff                      | No gradient               | Add linear ramp before threshold                 |
-| Unsolvable hard task                     | Structurally impossible   | Verify action space complete                     |
-| Unbounded grader accumulation            | Invalid scores (>1.0)     | Normalize: `1.0 - (violations / len(trajectory))` |
+| Mistake                               | Impact                  | Prevention                                        |
+| ------------------------------------- | ----------------------- | ------------------------------------------------- |
+| inference.py in subdirectory          | **DISQUALIFIED**        | Keep in root, never move                          |
+| Hardcoded API key/token               | **DISQUALIFIED**        | Always use `os.environ.get(key)`                  |
+| Grader score > 1.0 or < 0.0           | **DISQUALIFIED**        | Normalize by trajectory length + clamp            |
+| Using Google Gemini instead of OpenAI | **DISQUALIFIED**        | `from openai import OpenAI`                       |
+| Wrong environment variable names      | **DISQUALIFIED**        | Must be `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`  |
+| Float equality `== 0.0`               | Fails edge cases        | Use `< tolerance` always                          |
+| Sparse reward cliff                   | No gradient             | Add linear ramp before threshold                  |
+| Unsolvable hard task                  | Structurally impossible | Verify action space complete                      |
+| Unbounded grader accumulation         | Invalid scores (>1.0)   | Normalize: `1.0 - (violations / len(trajectory))` |
 
 ---
 
@@ -516,10 +681,10 @@ This implementation incorporates all 5 audit fixes from the specification:
 **Status:** Implementation Phase (Core Logic Complete)  
 **Implementation Phase:** Phase 5 Infrastructure Specification (Next)
 
-| Phase | Specification           | Status      | Description                               |
-| ----- | ----------------------- | ----------- | ----------------------------------------- |
-| 1     | **Domain Spec**         | ✅ Complete  | Task ladder & OpenEnv configuration       |
-| 2     | **Contract Spec**       | ✅ Complete  | Pydantic models & validation constraints  |
-| 3     | **Reward Spec**         | ✅ Complete  | Dense reward formula & gradient ramp      |
-| 4     | **Grader Spec**         | ✅ Complete  | Normalized, length-invariant scoring logic |
-| 5     | **Infrastructure Spec** | 🚀 Next      | Docker, Inference, & HF Space Deployment  |
+| Phase | Specification           | Status      | Description                                |
+| ----- | ----------------------- | ----------- | ------------------------------------------ |
+| 1     | **Domain Spec**         | ✅ Complete | Task ladder & OpenEnv configuration        |
+| 2     | **Contract Spec**       | ✅ Complete | Pydantic models & validation constraints   |
+| 3     | **Reward Spec**         | ✅ Complete | Dense reward formula & gradient ramp       |
+| 4     | **Grader Spec**         | ✅ Complete | Normalized, length-invariant scoring logic |
+| 5     | **Infrastructure Spec** | 🚀 Next     | Docker, Inference, & HF Space Deployment   |

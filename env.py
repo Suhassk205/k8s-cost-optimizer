@@ -39,6 +39,214 @@ _REPLICAS_MIN = 0
 _REPLICAS_MAX = 200
 
 
+# ---------------------------------------------------------------------------
+# TraceLoader: Handles all trace file I/O and validation (Fix #20)
+# ---------------------------------------------------------------------------
+class TraceLoader:
+    """Loads and validates deterministic trace JSON files."""
+
+    @staticmethod
+    def load(trace_path: str | Path) -> dict:
+        """
+        Load and validate deterministic trace JSON.
+
+        Args:
+            trace_path: Path to JSON file (str or Path).
+
+        Returns:
+            dict: Validated trace structure.
+
+        Raises:
+            FileNotFoundError: If trace_path does not exist.
+            ValueError: If required schema keys are missing or steps list is empty.
+        """
+        trace_path = Path(trace_path) if isinstance(trace_path, str) else trace_path
+        
+        if not trace_path.exists():
+            raise FileNotFoundError(
+                f"Trace file not found: {trace_path}. "
+                f"Expected one of: traces/trace_v1_coldstart.json, "
+                f"traces/trace_v1_squeeze.json, traces/trace_v1_entropy.json"
+            )
+
+        with trace_path.open("r", encoding="utf-8") as fh:
+            data: dict = json.load(fh)
+
+        # Validate schema
+        TraceLoader._validate_schema(data, trace_path)
+        return data
+
+    @staticmethod
+    def _validate_schema(data: dict, trace_path: Path) -> None:
+        """Validate trace JSON schema and values."""
+        # Required top-level keys
+        missing_keys = [k for k in ("task_name", "task_difficulty", "steps") if k not in data]
+        if missing_keys:
+            raise ValueError(
+                f"Trace JSON missing required keys: {missing_keys} "
+                f"(file: {trace_path})"
+            )
+
+        # Steps must be a non-empty list
+        if not isinstance(data["steps"], list) or len(data["steps"]) == 0:
+            raise ValueError(
+                f"Trace 'steps' must be a non-empty list (file: {trace_path})"
+            )
+
+        # Validate each step
+        for i, step in enumerate(data["steps"]):
+            for sub_key in ("step", "observation"):
+                if sub_key not in step:
+                    raise ValueError(
+                        f"Trace step index {i} missing key '{sub_key}' "
+                        f"(file: {trace_path})"
+                    )
+            
+            obs = step["observation"]
+            required_obs_keys = [
+                "cpu_usage_pct", "mem_usage_pct", "p99_latency_ms",
+                "http_error_rate", "cpu_steal_pct", "active_replicas",
+                "buffer_depth", "node_size_class", "current_hourly_cost",
+                "node_bin_density",
+            ]
+            missing_obs = [k for k in required_obs_keys if k not in obs]
+            if missing_obs:
+                raise ValueError(
+                    f"Trace step {i} observation missing keys: {missing_obs} "
+                    f"(file: {trace_path})"
+                )
+            
+            if not isinstance(obs["node_bin_density"], list) or len(obs["node_bin_density"]) != 10:
+                raise ValueError(
+                    f"Trace step {i}: node_bin_density must be a 10-element list "
+                    f"(file: {trace_path})"
+                )
+
+            # Numeric range validation
+            if not (0.0 <= float(obs["cpu_usage_pct"]) <= 100.0):
+                raise ValueError(f"Trace step {i}: cpu_usage_pct out of [0,100] (file: {trace_path})")
+            if not (0.0 <= float(obs["mem_usage_pct"]) <= 100.0):
+                raise ValueError(f"Trace step {i}: mem_usage_pct out of [0,100] (file: {trace_path})")
+            if float(obs["http_error_rate"]) < 0.0 or float(obs["http_error_rate"]) > 1.0:
+                raise ValueError(f"Trace step {i}: http_error_rate out of [0,1] (file: {trace_path})")
+            if float(obs["cpu_steal_pct"]) < 0.0 or float(obs["cpu_steal_pct"]) > 1.0:
+                raise ValueError(f"Trace step {i}: cpu_steal_pct out of [0,1] (file: {trace_path})")
+
+
+# ---------------------------------------------------------------------------
+# RewardComputer: Pure functions for reward calculation (Fix #21)
+# ---------------------------------------------------------------------------
+class RewardComputer:
+    """Stateless reward computation following PROJECT_SPEC.md §3 formula."""
+
+    @staticmethod
+    def compute(observation: Observation, previous_steal_pct: float) -> float:
+        """
+        Calculate episode reward from observation and previous state.
+
+        Implements formula:
+            R = (10.0 × Uptime)
+              − (5.0 × Cost/Budget)
+              − RampPenalty(p99)
+              − SLABreach(p99)
+              + ProactiveBonus
+
+        Args:
+            observation: Current state observation.
+            previous_steal_pct: CPU steal from previous step (for proactive bonus).
+
+        Returns:
+            float: Reward clamped to [-20.0, +10.5].
+        """
+        p99 = observation.p99_latency_ms
+        cost_fraction = observation.current_hourly_cost / _HOURLY_BUDGET
+
+        # Uptime component
+        uptime = 1.0 if p99 < 300.0 else 0.0
+        uptime_reward = 10.0 * uptime
+
+        # Cost penalty (capped at 5.0)
+        cost_penalty = min(5.0, 5.0 * cost_fraction)
+
+        # Ramp penalty (dense signal in warning zone [200, 300))
+        ramp_penalty = 0.0
+        if 200.0 <= p99 < 300.0:
+            ramp_penalty = ((p99 - 200.0) / 100.0) * 5.0
+
+        # SLA breach hard penalty
+        sla_breach_penalty = 20.0 if p99 >= 300.0 else 0.0
+
+        # Proactive bonus (steal dropping + healthy p99)
+        proactive_bonus = 0.0
+        steal_dropped = observation.cpu_steal_pct < previous_steal_pct
+        if steal_dropped and p99 < 300.0:
+            proactive_bonus = 0.5
+
+        # Sum and clamp
+        raw_reward = (
+            uptime_reward
+            - cost_penalty
+            - ramp_penalty
+            - sla_breach_penalty
+            + proactive_bonus
+        )
+        return float(max(_R_MIN, min(_R_MAX, raw_reward)))
+
+
+# ---------------------------------------------------------------------------
+# ActionValidator: Action validation and type checking (Fix #22)
+# ---------------------------------------------------------------------------
+class ActionValidator:
+    """Validates actions before application in environment."""
+
+    @staticmethod
+    def validate(action: Action) -> None:
+        """
+        Validate action is well-formed and applicable.
+
+        Args:
+            action: Action to validate.
+
+        Raises:
+            ValueError: If action is invalid.
+        """
+        if action is None:
+            raise ValueError("Action cannot be None")
+        
+        if not isinstance(action, Action):
+            raise ValueError(f"Action must be Action type, got {type(action)}")
+        
+        if action.action_type is None:
+            raise ValueError("Action.action_type cannot be None")
+        
+        if not isinstance(action.action_type, ActionType):
+            raise ValueError(f"action_type must be ActionType, got {type(action.action_type)}")
+
+    @staticmethod
+    def get_replica_delta(action_type: ActionType) -> int:
+        """
+        Get replica count delta for a scale action.
+
+        Args:
+            action_type: Action type to analyze.
+
+        Returns:
+            int: Replica delta (positive=scale up, negative=scale down, 0=no change).
+        """
+        scale_map = {
+            ActionType.SCALE_DOWN_5: -5,
+            ActionType.SCALE_DOWN_1: -1,
+            ActionType.SCALE_UP_1: 1,
+            ActionType.SCALE_UP_5: 5,
+            ActionType.SCALE_UP_10: 10,
+            ActionType.SCALE_UP_20: 20,
+            ActionType.UPGRADE_NODE: 0,
+            ActionType.REBALANCE_NODE: 0,
+            ActionType.MAINTAIN: 0,
+        }
+        return scale_map.get(action_type, 0)
+
+
 class KubeCostEnv:
     """Kubernetes cost optimization environment.
 
@@ -68,7 +276,7 @@ class KubeCostEnv:
             ValueError: If trace schema is invalid
         """
         self.trace_path = Path(trace_path)
-        self.trace: dict = self._load_trace(self.trace_path)
+        self.trace: dict = TraceLoader.load(self.trace_path)
         self.steps_data = self.trace["steps"]  # list[dict]
         self.total_steps: int = len(self.steps_data)
 
@@ -137,59 +345,46 @@ class KubeCostEnv:
                 - dict:        Info / metadata.
 
         Step semantics:
-            1. Apply action  → mutate self._replicas / self._node_size.
+            1. Validate action.
             2. Advance step counter (next trace row provides new observation).
             3. Build new Observation from trace (physics ground-truth).
-            4. Compute reward from new observation.
-            5. Determine done.
-            6. Return 4-tuple.
+            4. Apply action to internal state.
+            5. Compute reward from new observation.
+            6. Determine done, return 4-tuple.
         """
-        # 1. Apply action — mutates self._replicas / self._node_size
-        self._apply_action(action)
-
-        # 2. Advance step counter
+        # 0. Validate action
+        ActionValidator.validate(action)
+        
+        # 1. Advance step counter FIRST
         self._step += 1
-
-        # 3. Load next observation from trace (deterministic load background)
-        trace_idx = min(self._step, self.total_steps - 1)
+        
+        # Prevent stepping beyond trace length
+        if self._step >= self.total_steps:
+            done = True
+            return self._current_obs, 0.0, done, {}
+        
+        # 2. Load next observation from trace
+        trace_idx = self._step
         obs_raw = self.steps_data[trace_idx]["observation"]
         new_obs = self._parse_observation(obs_raw)
-
-        # --------------------------------------------------------------
-        # PHYSICS OVERLAY (Phase 1 Remediation)
-        # Making the environment reactive to agent actions.
-        # --------------------------------------------------------------
         
-        # A. Latency Physics: p99 scaled by capacity
-        # Formula: p99_actual = p99_trace * (expected_replicas + 1) / (agent_replicas + 1)
-        # Default trace expected_replicas is usually 0 or small for these tasks.
-        trace_replicas = int(obs_raw["active_replicas"])
-        latency_factor = (trace_replicas + 1.0) / (self._replicas + 1.0)
-        new_obs.p99_latency_ms *= latency_factor
+        # 3. Capture steal BEFORE reward calculation (for proactive bonus)
+        if self._current_obs is not None:
+            self._prev_steal_pct = self._current_obs.cpu_steal_pct
         
-        # B. Cost Physics: Base node cost + pod cost
-        # Node S=10, M=25, L=60 (approx hourly)
-        node_costs = {NodeSizeClass.SMALL: 10.0, NodeSizeClass.MEDIUM: 25.0, NodeSizeClass.LARGE: 60.0}
-        pod_unit_cost = 0.5  # $0.5 per pod per hour
-        new_obs.current_hourly_cost = node_costs[self._node_size] + (self._replicas * pod_unit_cost)
-        
-        # C. Steal Physics: REBALANCE_NODE reduces steal for a window
-        if self._rebalance_impact_remaining > 0:
-            new_obs.cpu_steal_pct *= 0.5  # 50% reduction in noisy neighbor impact
-            self._rebalance_impact_remaining -= 1
-            
-        # D. State Update
-        new_obs.active_replicas = self._replicas
-        new_obs.node_size_class = self._node_size
+        # 4. Set new observation (observations are directly from trace, no formula overlays)
         self._current_obs = new_obs
-
-        # 4. Compute reward (from updated obs)
+        
+        # 5. NOW apply the action to internal state (replicas, node_size)
+        self._apply_action(action)
+        
+        # 6. Compute reward (uses correct prev/curr steal comparison)
         reward: float = self._calculate_reward()
-
-        # 5. Determine done
+        
+        # 7. Determine done
         done: bool = self._step >= self.total_steps - 1
-
-        # 6. Build info dict
+        
+        # 8. Build info dict
         info: Dict[str, Any] = {
             "step": self._step,
             "task_name": self.trace.get("task_name", ""),
@@ -198,8 +393,8 @@ class KubeCostEnv:
             "node_size": self._node_size.value,
             "trace_reason": self.steps_data[trace_idx].get("dynamics", {}).get("reason", ""),
         }
-
-        # 7. Log to trajectory
+        
+        # 9. Log to trajectory (without redundant metrics)
         self._trajectory.append(
             TrajectoryStep(
                 observation=self._current_obs,
@@ -207,8 +402,6 @@ class KubeCostEnv:
                 reward=reward,
                 done=done,
                 info=info,
-                uptime_metric=1.0 if self._current_obs.p99_latency_ms < 300.0 else 0.0,
-                cost_metric=self._current_obs.current_hourly_cost / _HOURLY_BUDGET,
             )
         )
 
@@ -249,15 +442,8 @@ class KubeCostEnv:
         MAINTAIN:
             No state mutation.
 
-        In all cases, saves the pre-action steal_pct for the proactive bonus check
-        at reward time, then records the action for trajectory logging.
-
         Reference: PROJECT_SPEC.md §4 Action Space
         """
-        # Snapshot steal_pct from current observation *before* mutation
-        if self._current_obs is not None:
-            self._prev_steal_pct = self._current_obs.cpu_steal_pct
-
         action_type = action.action_type
 
         # ---- SCALE_REPLICAS branch ----
@@ -288,8 +474,13 @@ class KubeCostEnv:
 
         # ---- REBALANCE_NODE: proactive signal, triggers physics impact ----
         elif action_type == ActionType.REBALANCE_NODE:
-            # Impact lasts for 5 steps (can be renewed)
-            self._rebalance_impact_remaining = 5
+            # Rebalance only has effect if steal is currently high
+            if self._current_obs and self._current_obs.cpu_steal_pct >= 0.15:
+                # Impact lasts for 3 steps (conservative, based on K8s drain/reschedule time)
+                self._rebalance_impact_remaining = 3
+            else:
+                # Unnecessary rebalance — no effect (agent learns not to spam)
+                self._rebalance_impact_remaining = 0
 
         # ---- MAINTAIN: explicit no-op ----
         elif action_type == ActionType.MAINTAIN:
@@ -297,23 +488,7 @@ class KubeCostEnv:
 
     def _calculate_reward(self) -> float:
         """
-        Calculate reward signal for the current step (internal helper).
-
-        Implements the exact formula from PROJECT_SPEC.md §3 (Phase 3 Reward Spec):
-
-            R = (10.0 × Uptime)
-              − (5.0 × Cost/Budget)
-              − RampPenalty(p99)
-              − SLABreach(p99)
-              + ProactiveBonus
-
-        Component definitions:
-            Uptime         = 1.0  if p99 < 300ms, else 0.0
-            RampPenalty    = (p99 − 200) / 100 × 5.0    when p99 ∈ [200, 300)  ← Audit Fix 03
-            SLABreach      = 20.0 penalty                when p99 ≥ 300ms
-            ProactiveBonus = +0.5 when steal drops AND p99 < 300ms
-
-        Bounds: R clamped to [R_MIN, R_MAX] = [-20.0, +10.5].
+        Calculate reward signal for the current step (uses RewardComputer).
 
         Returns:
             float: Reward in range [-20.0, +10.5].
@@ -321,135 +496,7 @@ class KubeCostEnv:
         obs = self._current_obs
         if obs is None:
             return 0.0
-
-        p99 = obs.p99_latency_ms
-        cost_fraction = obs.current_hourly_cost / _HOURLY_BUDGET
-
-        # ---- Uptime component ----
-        uptime = 1.0 if p99 < 300.0 else 0.0
-        uptime_reward = 10.0 * uptime
-
-        # ---- Cost penalty ----
-        cost_penalty = 5.0 * cost_fraction
-
-        # ---- Ramp penalty (Audit Fix 03: eliminates cliff at 300ms) ----
-        #   Linear gradient in [200, 300) — gives dense signal in warning zone.
-        ramp_penalty = 0.0
-        if 200.0 <= p99 < 300.0:
-            ramp_penalty = ((p99 - 200.0) / 100.0) * 5.0  # [0.0, 5.0)
-
-        # ---- SLA breach hard penalty ----
-        sla_breach_penalty = 20.0 if p99 >= 300.0 else 0.0
-
-        # ---- Proactive bonus ----
-        #   Granted when steal_pct is *dropping* compared to previous step
-        #   AND p99 is still healthy (< 300ms).
-        proactive_bonus = 0.0
-        steal_dropped = obs.cpu_steal_pct < self._prev_steal_pct
-        if steal_dropped and p99 < 300.0:
-            proactive_bonus = 0.5
-
-        # ---- Sum and clamp ----
-        raw_reward = (
-            uptime_reward
-            - cost_penalty
-            - ramp_penalty
-            - sla_breach_penalty
-            + proactive_bonus
-        )
-        return float(max(_R_MIN, min(_R_MAX, raw_reward)))
-
-    def _load_trace(self, trace_path: Path) -> dict:
-        """
-        Load and validate deterministic trace JSON (internal helper).
-
-        Args:
-            trace_path: Path to JSON file.
-
-        Returns:
-            dict: Validated trace structure.
-
-        Expected schema:
-            {
-              "task_name": "cold_start|efficient_squeeze|entropy_storm",
-              "task_difficulty": "easy|medium|hard",
-              "steps": [
-                {
-                  "step": 0,
-                  "observation": {...},
-                  "action": "MAINTAIN",
-                  "dynamics": {...}
-                },
-                ...
-              ]
-            }
-
-        Raises:
-            FileNotFoundError: If trace_path does not exist.
-            ValueError: If required schema keys are missing or steps list is empty.
-        """
-        if not trace_path.exists():
-            raise FileNotFoundError(
-                f"Trace file not found: {trace_path}. "
-                f"Expected one of: traces/trace_v1_coldstart.json, "
-                f"traces/trace_v1_squeeze.json, traces/trace_v1_entropy.json"
-            )
-
-        with trace_path.open("r", encoding="utf-8") as fh:
-            data: dict = json.load(fh)
-
-        # ---- Required top-level keys ----
-        missing_keys = [k for k in ("task_name", "task_difficulty", "steps") if k not in data]
-        if missing_keys:
-            raise ValueError(
-                f"Trace JSON missing required keys: {missing_keys} "
-                f"(file: {trace_path})"
-            )
-
-        # ---- steps must be a non-empty list ----
-        if not isinstance(data["steps"], list) or len(data["steps"]) == 0:
-            raise ValueError(
-                f"Trace 'steps' must be a non-empty list (file: {trace_path})"
-            )
-
-        # ---- Validate each step has required sub-keys ----
-        for i, step in enumerate(data["steps"]):
-            for sub_key in ("step", "observation"):
-                if sub_key not in step:
-                    raise ValueError(
-                        f"Trace step index {i} missing key '{sub_key}' "
-                        f"(file: {trace_path})"
-                    )
-            obs = step["observation"]
-            required_obs_keys = [
-                "cpu_usage_pct", "mem_usage_pct", "p99_latency_ms",
-                "http_error_rate", "cpu_steal_pct", "active_replicas",
-                "buffer_depth", "node_size_class", "current_hourly_cost",
-                "node_bin_density",
-            ]
-            missing_obs = [k for k in required_obs_keys if k not in obs]
-            if missing_obs:
-                raise ValueError(
-                    f"Trace step {i} observation missing keys: {missing_obs} "
-                    f"(file: {trace_path})"
-                )
-            if not isinstance(obs["node_bin_density"], list) or len(obs["node_bin_density"]) != 10:
-                raise ValueError(
-                    f"Trace step {i}: node_bin_density must be a 10-element list "
-                    f"(file: {trace_path})"
-                )
-
-            # extra contract checks (Phase 2): numeric ranges
-            if not (0.0 <= float(obs["cpu_usage_pct"]) <= 100.0):
-                raise ValueError(f"Trace step {i}: cpu_usage_pct out of [0,100] (file: {trace_path})")
-            if not (0.0 <= float(obs["mem_usage_pct"]) <= 100.0):
-                raise ValueError(f"Trace step {i}: mem_usage_pct out of [0,100] (file: {trace_path})")
-            if float(obs["http_error_rate"]) < 0.0 or float(obs["http_error_rate"]) > 1.0:
-                raise ValueError(f"Trace step {i}: http_error_rate out of [0,1] (file: {trace_path})")
-            if float(obs["cpu_steal_pct"]) < 0.0 or float(obs["cpu_steal_pct"]) > 1.0:
-                raise ValueError(f"Trace step {i}: cpu_steal_pct out of [0,1] (file: {trace_path})")
-
-        return data
+        return RewardComputer.compute(obs, self._prev_steal_pct)
 
     # ------------------------------------------------------------------
     # Private utility

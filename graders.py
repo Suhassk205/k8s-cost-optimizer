@@ -17,6 +17,35 @@ from typing import List
 from models import TrajectoryStep, ActionType
 
 
+class ObservationMetrics:
+    """Compute metrics from observations for grading."""
+    
+    @staticmethod
+    def is_healthy_uptime(p99_ms: float) -> bool:
+        """Check if p99 latency is within SLA."""
+        return p99_ms < 300.0
+    
+    @staticmethod
+    def is_warning_zone(p99_ms: float) -> bool:
+        """Check if p99 in warning zone [200, 300)."""
+        return 200.0 <= p99_ms < 300.0
+    
+    @staticmethod
+    def uptime_score(p99_ms: float) -> float:
+        """Return 1.0 if healthy, 0.0 if breach."""
+        return 1.0 if p99_ms < 300.0 else 0.0
+    
+    @staticmethod
+    def steal_violation(steal_pct: float, threshold: float = 0.20) -> bool:
+        """Check if steal exceeds threshold."""
+        return steal_pct >= threshold
+    
+    @staticmethod
+    def cost_ratio(hourly_cost: float, budget: float = 100.0) -> float:
+        """Compute cost as fraction of budget."""
+        return hourly_cost / budget
+
+
 class ColdStartGrader:
     """
     Task 1: Cold Start (Easy).
@@ -57,6 +86,8 @@ class ColdStartGrader:
         """
         # Edge case: empty trajectory
         if not trajectory:
+            import sys
+            print(f"[ERROR] ColdStartGrader: received empty trajectory", file=sys.stderr)
             return 0.0
 
         # Collect http_error_rate from every step's observation
@@ -120,6 +151,8 @@ class EfficientSqueezeGrader:
         """
         # Edge case: empty trajectory
         if not trajectory:
+            import sys
+            print(f"[ERROR] EfficientSqueezeGrader: received empty trajectory", file=sys.stderr)
             return 0.0
 
         # Count steps where steal crossed the 20% threshold
@@ -187,11 +220,13 @@ class EntropyStormGrader:
 
         Returns:
             float: Score in [0.0, 1.0].
-                   1.0 = all violations predicted (or no violations at all).
+                   1.0 = all violations predicted (or actively prevented via REBALANCE).
                    0.0 = no proactive actions before any violation.
         """
         # Edge case: empty trajectory
         if not trajectory:
+            import sys
+            print(f"[ERROR] EntropyStormGrader: received empty trajectory", file=sys.stderr)
             return 0.0
 
         # Step 1: Find all violation indices
@@ -201,9 +236,16 @@ class EntropyStormGrader:
             if step.observation.cpu_steal_pct >= self.STEAL_THRESHOLD
         ]
 
-        # Special case: zero violations → agent avoided every breach → perfect score
+        # Special case: zero violations
         if not violation_indices:
-            return 1.0
+            # Agent was passive/lucky — only grant partial credit if they took REBALANCE actions
+            rebalance_count = sum(1 for step in trajectory if step.action == ActionType.REBALANCE_NODE)
+            if rebalance_count > 0:
+                # Agent was actively trying to prevent (proactive even when not needed)
+                return 1.0
+            else:
+                # Agent did nothing; don't reward inaction
+                return 0.5
 
         total_violations = len(violation_indices)
         proactive_actions = 0

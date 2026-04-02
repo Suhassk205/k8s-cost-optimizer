@@ -93,8 +93,8 @@ class Observation(BaseModel):
     )
 
     class Config:
-        """Allow string enum values in JSON."""
-        use_enum_values = False
+        """Use enum values (not names) in JSON serialization."""
+        use_enum_values = True
 
 
 # ===== ACTIONS (Agent decisions) =====
@@ -133,8 +133,8 @@ class EnvState(BaseModel):
     )
 
     class Config:
-        """Allow string enum values."""
-        use_enum_values = False
+        """Use enum values in JSON serialization."""
+        use_enum_values = True
 
 
 # ===== TRAJECTORY (For grading) =====
@@ -143,6 +143,8 @@ class TrajectoryStep(BaseModel):
     """Single step in episode trajectory (for graders).
     
     Reference: PROJECT_SPEC.md §4 Grader Specification
+    
+    Note: Remove redundant metrics (uptime_metric, cost_metric) — graders compute these from observation.
     """
     
     observation: Observation
@@ -153,20 +155,10 @@ class TrajectoryStep(BaseModel):
         default_factory=dict,
         description="Metadata dict"
     )
-    
-    # Task-specific metrics for grading
-    uptime_metric: float = Field(
-        ge=0, le=1,
-        description="SLA adherence [0-1]; 1.0 = p99 < 300ms"
-    )
-    cost_metric: float = Field(
-        ge=0,
-        description="Cost relative to budget [0-∞]"
-    )
 
     class Config:
-        """Allow enum values."""
-        use_enum_values = False
+        """Use enum values in JSON serialization."""
+        use_enum_values = True
 
 
 class Trajectory(BaseModel):
