@@ -9,7 +9,10 @@ Tests that graders:
 """
 
 import pytest
-from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader, ObservationMetrics
+from graders import (
+    ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader,
+    is_healthy_uptime, is_warning_zone, steal_violation,
+)
 from models import TrajectoryStep, Observation, ActionType, NodeSizeClass
 
 
@@ -43,25 +46,25 @@ def dummy_step(dummy_observation):
 
 
 class TestObservationMetrics:
-    """Test the metrics helper class."""
+    """Test the observation metrics functions."""
     
     def test_is_healthy_uptime(self):
-        assert ObservationMetrics.is_healthy_uptime(280.0) == True
-        assert ObservationMetrics.is_healthy_uptime(300.0) == False
-        assert ObservationMetrics.is_healthy_uptime(350.0) == False
+        assert is_healthy_uptime(280.0) == True
+        assert is_healthy_uptime(300.0) == False
+        assert is_healthy_uptime(350.0) == False
     
     def test_is_warning_zone(self):
-        assert ObservationMetrics.is_warning_zone(200.0) == True
-        assert ObservationMetrics.is_warning_zone(250.0) == True
-        assert ObservationMetrics.is_warning_zone(299.9) == True
-        assert ObservationMetrics.is_warning_zone(300.0) == False
-        assert ObservationMetrics.is_warning_zone(150.0) == False
+        assert is_warning_zone(200.0) == True
+        assert is_warning_zone(250.0) == True
+        assert is_warning_zone(299.9) == True
+        assert is_warning_zone(300.0) == False
+        assert is_warning_zone(150.0) == False
     
     def test_steal_violation(self):
-        assert ObservationMetrics.steal_violation(0.20) == True
-        assert ObservationMetrics.steal_violation(0.25) == True
-        assert ObservationMetrics.steal_violation(0.19) == False
-        assert ObservationMetrics.steal_violation(0.0) == False
+        assert steal_violation(0.20) == True
+        assert steal_violation(0.25) == True
+        assert steal_violation(0.19) == False
+        assert steal_violation(0.0) == False
 
 
 class TestColdStartGrader:

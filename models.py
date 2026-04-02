@@ -170,3 +170,34 @@ class Trajectory(BaseModel):
         min_length=0,
         description="List of trajectory steps"
     )
+
+
+# ===== TRACE DATA (For loading from JSON files) =====
+
+class TraceStep(BaseModel):
+    """Single step record from a deterministic trace JSON file.
+    
+    Reference: PROJECT_SPEC.md §3 Phase 1 Determinism Guarantee
+    """
+    step: int = Field(description="Step index in trace")
+    observation: Observation = Field(description="Observation at this step")
+    dynamics: dict = Field(
+        default_factory=dict,
+        description="Optional dynamics metadata (reason, etc.)"
+    )
+
+
+class TraceData(BaseModel):
+    """Full deterministic trace loaded from JSON file.
+    
+    Pydantic automatically validates all nested Observation fields, step numbers,
+    and ensures the trace structure is well-formed.
+    
+    Reference: PROJECT_SPEC.md §3 Phase 1 Determinism Guarantee
+    """
+    task_name: str = Field(description="Task identifier")
+    task_difficulty: str = Field(description="Task difficulty (easy|medium|hard)")
+    steps: List[TraceStep] = Field(
+        min_length=1,
+        description="Non-empty list of trace steps"
+    )

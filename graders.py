@@ -17,33 +17,33 @@ from typing import List
 from models import TrajectoryStep, ActionType
 
 
-class ObservationMetrics:
-    """Compute metrics from observations for grading."""
-    
-    @staticmethod
-    def is_healthy_uptime(p99_ms: float) -> bool:
-        """Check if p99 latency is within SLA."""
-        return p99_ms < 300.0
-    
-    @staticmethod
-    def is_warning_zone(p99_ms: float) -> bool:
-        """Check if p99 in warning zone [200, 300)."""
-        return 200.0 <= p99_ms < 300.0
-    
-    @staticmethod
-    def uptime_score(p99_ms: float) -> float:
-        """Return 1.0 if healthy, 0.0 if breach."""
-        return 1.0 if p99_ms < 300.0 else 0.0
-    
-    @staticmethod
-    def steal_violation(steal_pct: float, threshold: float = 0.20) -> bool:
-        """Check if steal exceeds threshold."""
-        return steal_pct >= threshold
-    
-    @staticmethod
-    def cost_ratio(hourly_cost: float, budget: float = 100.0) -> float:
-        """Compute cost as fraction of budget."""
-        return hourly_cost / budget
+# ---------------------------------------------------------------------------
+# Observation metrics (module-level functions)
+# ---------------------------------------------------------------------------
+
+def is_healthy_uptime(p99_ms: float) -> bool:
+    """Check if p99 latency is within SLA."""
+    return p99_ms < 300.0
+
+
+def is_warning_zone(p99_ms: float) -> bool:
+    """Check if p99 in warning zone [200, 300)."""
+    return 200.0 <= p99_ms < 300.0
+
+
+def uptime_score(p99_ms: float) -> float:
+    """Return 1.0 if healthy, 0.0 if breach."""
+    return 1.0 if p99_ms < 300.0 else 0.0
+
+
+def steal_violation(steal_pct: float, threshold: float = 0.20) -> bool:
+    """Check if steal exceeds threshold."""
+    return steal_pct >= threshold
+
+
+def cost_ratio(hourly_cost: float, budget: float = 100.0) -> float:
+    """Compute cost as fraction of budget."""
+    return hourly_cost / budget
 
 
 class ColdStartGrader:
