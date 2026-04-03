@@ -21,6 +21,9 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 import gradio as gr
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from inference import (
     CostOptimizerAgent,
@@ -30,7 +33,11 @@ from inference import (
 )
 from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
 from env import KubeCostEnv
-from models import Observation
+from models import Observation, Action, ActionType
+
+# REST API request models
+class StepRequest(BaseModel):
+    action: str  # e.g., "SCALE_REPLICAS(+5)"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -40,6 +47,128 @@ logger = logging.getLogger(__name__)
 agent: CostOptimizerAgent = None
 results: Dict[str, float] = {}
 start_time = datetime.now()
+
+# REST API state - separate from Gradio agent
+rest_env: KubeCostEnv = None
+rest_current_trace: str = None
+
+
+# ===== FastAPI REST API Setup =====
+
+def create_fastapi_app() -> FastAPI:
+    """Create FastAPI app with OpenEnv REST endpoints."""
+    app = FastAPI(
+        title="KubeCost-Gym OpenEnv API",
+        description="REST API for KubeCost-Gym environment validation",
+        version="3.0",
+    )
+
+    @app.post("/reset")
+    @app.get("/reset")
+    async def reset_env(trace_path: str = "traces/trace_v1_coldstart.json"):
+        """
+        Reset environment to initial state.
+        
+        Accepts:
+            - POST with optional JSON body: {"trace_path": "traces/..."}
+            - GET with optional query param: ?trace_path=traces/...
+            - Empty request (uses default trace)
+        
+        Returns:
+            Initial Observation as JSON
+        """
+        global rest_env, rest_current_trace
+        
+        try:
+            # Create new environment
+            rest_env = KubeCostEnv(trace_path)
+            rest_current_trace = trace_path
+            
+            # Get initial observation
+            obs = rest_env.reset()
+            
+            logger.info(f"✓ Environment reset with trace: {trace_path}")
+            return obs.model_dump()
+        
+        except FileNotFoundError as e:
+            logger.error(f"Trace file not found: {trace_path}")
+            raise HTTPException(status_code=404, detail=f"Trace not found: {trace_path}")
+        except Exception as e:
+            logger.error(f"Reset failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Reset error: {str(e)}")
+
+    @app.post("/step")
+    async def step_env(request: StepRequest):
+        """
+        Execute one environment step with given action.
+        
+        Request body:
+            {"action": "SCALE_REPLICAS(+5)"}
+        
+        Returns:
+            JSON with keys: observation, reward, done, info
+        """
+        global rest_env
+        
+        if rest_env is None:
+            raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
+        
+        try:
+            # Convert action string to ActionType enum
+            action_type = ActionType(request.action)
+            action_obj = Action(action_type=action_type)
+            
+            # Execute step
+            obs, reward, done, info = rest_env.step(action_obj)
+            
+            logger.info(f"Step executed: action={request.action}, reward={reward:.2f}, done={done}")
+            
+            return {
+                "observation": obs.model_dump(),
+                "reward": float(reward),
+                "done": bool(done),
+                "info": info,
+            }
+        
+        except ValueError as e:
+            logger.error(f"Invalid action: {request.action}")
+            raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}")
+        except Exception as e:
+            logger.error(f"Step failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Step error: {str(e)}")
+
+    @app.get("/state")
+    async def get_state():
+        """
+        Get current environment state.
+        
+        Returns:
+            Current state as JSON
+        """
+        global rest_env
+        
+        if rest_env is None:
+            raise HTTPException(status_code=400, detail="Environment not initialized. Call /reset first.")
+        
+        try:
+            state = rest_env.state()
+            logger.info("State retrieved")
+            return state.model_dump() if hasattr(state, 'model_dump') else state
+        
+        except Exception as e:
+            logger.error(f"State retrieval failed: {e}")
+            raise HTTPException(status_code=500, detail=f"State error: {str(e)}")
+
+    @app.get("/health")
+    async def health_check():
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "env_initialized": rest_env is not None,
+            "trace": rest_current_trace,
+        }
+
+    return app
 
 
 def initialize_agent():
@@ -340,9 +469,9 @@ User Input → Gradio Interface → Agent.decide()
 
 
 def main():
-    """Main entry point. Initialize and launch Gradio app."""
+    """Main entry point. Initialize and launch FastAPI with embedded Gradio app."""
     logger.info("=" * 70)
-    logger.info("KubeCost-Gym Gradio Application Starting")
+    logger.info("KubeCost-Gym Application Starting (FastAPI + Gradio)")
     logger.info("=" * 70)
 
     # Initialize agent
@@ -351,28 +480,40 @@ def main():
         logger.warning(f"Agent initialization warning: {msg}")
         # Continue anyway - agent will be initialized on first use if env vars set
 
-    # Create interface
+    # Create Gradio interface (without launching)
     interface = create_interface()
 
-    # Get port from environment or use default
+    # Create FastAPI app with REST endpoints
+    app = create_fastapi_app()
+
+    # Mount Gradio's ASGI app on FastAPI
+    # Access Gradio's internal app and add it as a catch-all route
+    from starlette.routing import Mount
+    from starlette.applications import Starlette
+    
+    # Get the Gradio app's internal FastAPI instance
+    # When Gradio creates a Blocks interface, it has an .app attribute
+    gradio_app = interface.app
+    
+    # Mount Gradio app on the root path
+    app.mount("/", gradio_app)
+
+    # Get port and host from environment
     port = int(os.environ.get("PORT", 7860))
-    server_name = os.environ.get("SERVER_NAME", "0.0.0.0")
+    host = os.environ.get("SERVER_NAME", "0.0.0.0")
 
-    logger.info(f"Launching Gradio app on {server_name}:{port}")
+    logger.info(f"Launching combined app on {host}:{port}")
+    logger.info("  - Web UI: http://localhost:7860/")
+    logger.info("  - REST API: http://localhost:7860/docs (Swagger UI)")
+    logger.info("  - Endpoints: POST /reset, POST /step, GET /state, GET /health")
 
-    # Launch with queue enabled for better handling of long-running tasks
-    interface.queue(
-        default_concurrency_limit=1,  # Process one task at a time
-        max_size=5,  # Queue up to 5 requests
-    ).launch(
-        server_name=server_name,
-        server_port=port,
-        share=False,
-        show_error=True,
-        theme=gr.themes.Soft(
-            primary_hue="blue",
-            secondary_hue="purple",
-        ),
+    # Launch using uvicorn
+    import uvicorn
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
     )
 
 
