@@ -168,6 +168,23 @@ def create_fastapi_app() -> FastAPI:
             "trace": rest_current_trace,
         }
 
+    @app.get("/")
+    async def root():
+        """Root endpoint with API documentation."""
+        return {
+            "name": "KubeCost-Gym OpenEnv API",
+            "version": "3.0",
+            "description": "REST API for Kubernetes cost optimization RL environment",
+            "endpoints": {
+                "POST /reset": "Reset environment to initial state",
+                "POST /step": "Execute action and get next step",
+                "GET /state": "Get current environment state",
+                "GET /health": "Health check",
+                "GET /docs": "Interactive API documentation (Swagger UI)",
+            },
+            "docs": "http://localhost:7860/docs",
+        }
+
     return app
 
 
