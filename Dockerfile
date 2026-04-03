@@ -33,8 +33,8 @@ RUN test -f openenv.yaml || (echo "ERROR: openenv.yaml not found in root directo
 # Verify trace files are present
 RUN test -d traces && test -f traces/trace_v1_coldstart.json || (echo "ERROR: traces directory or trace_v1_coldstart.json missing" && exit 1)
 
-# Verify openenv.yaml is valid YAML
-RUN python -c "import yaml; yaml.safe_load(open('openenv.yaml'))" || (echo "ERROR: openenv.yaml is not valid YAML" && exit 1)
+# Verify openenv.yaml is valid YAML (use uv run to access virtual environment)
+RUN uv run python -c "import yaml; yaml.safe_load(open('openenv.yaml'))" || (echo "ERROR: openenv.yaml is not valid YAML" && exit 1)
 
 # Expose port (HF Spaces standard)
 EXPOSE 7860
