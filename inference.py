@@ -284,14 +284,25 @@ Respond with ONLY valid JSON (no markdown):
                 timeout=_CONFIG.LLM_TIMEOUT_SEC,
             )
 
+            # Validate response structure
+            if not response.choices or len(response.choices) == 0:
+                raise ValueError("API returned no choices in response")
+            
+            if response.choices[0].message is None:
+                raise ValueError("API returned None message in first choice")
+
             # Parse response (handle markdown code blocks)
-            response_text = response.choices[0].message.content.strip()
+            response_content = response.choices[0].message.content
+            if response_content is None:
+                raise ValueError("LLM returned empty response (content is None)")
+            
+            response_text = response_content.strip()
 
             # Extract JSON (handle markdown code blocks)
             if "```" in response_text:
-                json_str = response_text.split("```")[1]
+                json_str = response_text.split("```")[1].strip()
                 if json_str.startswith("json"):
-                    json_str = json_str[4:]
+                    json_str = json_str[4:].strip()
                 response_json = json.loads(json_str)
             else:
                 response_json = json.loads(response_text)
