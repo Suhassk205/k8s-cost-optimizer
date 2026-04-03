@@ -17,10 +17,15 @@ Runs on: port 7860 (HF Spaces default)
 
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Callable
 
 import uvicorn
 from openenv.core import create_fastapi_app
+
+# Add parent directory to path so we can import modules from root
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from env import KubeCostEnv
 from inference import validate_env, EnvironmentValidationError
