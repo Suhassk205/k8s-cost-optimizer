@@ -52,11 +52,15 @@ class _InferenceConfig:
     MAX_STEPS_PER_EPISODE: int = 1000
 
     # Environment variables
-    REQUIRED_ENV_VARS: List[str] = ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN"]
+    API_BASE_URL_DEFAULT: str = "https://router.huggingface.co/v1"
+    MODEL_NAME_DEFAULT: str = "gpt-4.1-mini"
+
+    REQUIRED_ENV_VARS: List[str] = ["API_BASE_URL", "MODEL_NAME"]
+    REQUIRED_TOKEN_VARS: List[str] = ["HF_TOKEN"]  # HF_TOKEN mandatory for submission
 
     # Minimum score threshold
     MIN_MODEL_NAME_LENGTH: int = 2
-    MIN_HF_TOKEN_LENGTH: int = 10
+    MIN_API_KEY_LENGTH: int = 10
 
     # Trace file paths
     TASK_CONFIGS: List[Dict[str, Any]] = [
@@ -116,30 +120,34 @@ def validate_env() -> None:
     Raises:
         EnvironmentValidationError: If any required env var is missing or invalid.
     """
-    missing = [key for key in _CONFIG.REQUIRED_ENV_VARS if not os.environ.get(key)]
-    if missing:
-        error_msg = f"Missing required env vars: {', '.join(missing)}"
+    # Use defaults when env vars are missing, per challenge requirements
+    api_url = os.environ.get("API_BASE_URL", _CONFIG.API_BASE_URL_DEFAULT).strip()
+    model_name = os.environ.get("MODEL_NAME", _CONFIG.MODEL_NAME_DEFAULT).strip()
+
+    # HF_TOKEN is mandatory
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if not hf_token:
+        error_msg = "HF_TOKEN environment variable is required"
         logger.error(error_msg)
         raise EnvironmentValidationError(error_msg)
 
-    # Format validation
-    api_url = os.environ.get("API_BASE_URL", "").strip()
+    # Basic format and sanity validation
     if not (api_url.startswith("http://") or api_url.startswith("https://")):
         error_msg = f"API_BASE_URL must start with http:// or https://: {api_url}"
         logger.error(error_msg)
         raise EnvironmentValidationError(error_msg)
 
-    model_name = os.environ.get("MODEL_NAME", "").strip()
     if not model_name or len(model_name) < _CONFIG.MIN_MODEL_NAME_LENGTH:
         error_msg = f"MODEL_NAME must be non-empty and at least {_CONFIG.MIN_MODEL_NAME_LENGTH} chars: {model_name}"
         logger.error(error_msg)
         raise EnvironmentValidationError(error_msg)
 
-    hf_token = os.environ.get("HF_TOKEN", "").strip()
-    if len(hf_token) < _CONFIG.MIN_HF_TOKEN_LENGTH:
-        error_msg = f"HF_TOKEN appears invalid (too short: {len(hf_token)} < {_CONFIG.MIN_HF_TOKEN_LENGTH})"
+    if len(hf_token) < _CONFIG.MIN_API_KEY_LENGTH:
+        error_msg = f"HF_TOKEN must have length >= {_CONFIG.MIN_API_KEY_LENGTH}"
         logger.error(error_msg)
         raise EnvironmentValidationError(error_msg)
+
+    logger.info(f"Using API_BASE_URL={api_url} MODEL_NAME={model_name} HF_TOKEN=****")
 
 
 # ===== INFERENCE PIPELINE =====
@@ -174,18 +182,22 @@ class CostOptimizerAgent:
 
         Spec requirement: Uses OpenAI Client for all LLM calls.
         """
-        self.model_name = (model_name or os.environ.get("MODEL_NAME", "")).strip()
-        self.api_base_url = (api_base_url or os.environ.get("API_BASE_URL", "")).strip()
+        self.model_name = (model_name or os.environ.get("MODEL_NAME", _CONFIG.MODEL_NAME_DEFAULT)).strip()
+        self.api_base_url = (api_base_url or os.environ.get("API_BASE_URL", _CONFIG.API_BASE_URL_DEFAULT)).strip()
 
         if not self.model_name:
             raise InferenceError("MODEL_NAME env var required")
         if not self.api_base_url:
             raise InferenceError("API_BASE_URL env var required")
 
+        self.api_key = os.environ.get("HF_TOKEN", "").strip()
+        if not self.api_key:
+            raise InferenceError("HF_TOKEN env var required")
+
         try:
-            # Initialize OpenAI client with HF_TOKEN
+            # Initialize OpenAI client with API key
             self.client = OpenAI(
-                api_key=os.environ.get("HF_TOKEN"),
+                api_key=self.api_key,
                 base_url=self.api_base_url,
             )
             logger.debug(f"OpenAI client initialized: model={self.model_name}, base_url={self.api_base_url}")
@@ -331,6 +343,12 @@ Respond with ONLY valid JSON (no markdown):
         Raises:
             InferenceError: If episode produces empty trajectory or other error occurs.
         """
+        env_name = getattr(getattr(env, "trace", None), "task_name", "unknown")
+        print(f"[START] task={task_name or env_name} env={env_name} model={self.model_name}")
+
+        success = False
+        step_rewards: List[float] = []
+
         try:
             obs = env.reset()
 
@@ -338,11 +356,25 @@ Respond with ONLY valid JSON (no markdown):
                 # Get action from LLM
                 action = self.decide(obs, task_name)
 
-                # Execute step in environment (env logs trajectory internally)
-                obs, reward, done, info = env.step(action)
+                step_error: Optional[str] = None
+                try:
+                    obs, reward, done, info = env.step(action)
+                    step_error = info.get("last_action_error") if isinstance(info, dict) else None
+                except Exception as exc:
+                    reward = 0.0
+                    done = True
+                    step_error = str(exc)
+
+                step_rewards.append(reward)
+                action_text = getattr(action.action_type, "value", str(action.action_type))
+                error_text = step_error if step_error is not None else "null"
+                print(
+                    f"[STEP] step={step_num + 1} action={action_text} "
+                    f"reward={reward:.2f} done={str(done).lower()} error={error_text}"
+                )
 
                 if done:
-                    logger.debug(f"Episode {task_name} terminated at step {step_num}")
+                    logger.debug(f"Episode {task_name} terminated at step {step_num + 1}")
                     break
 
             trajectory = Trajectory(steps=env.trajectory)
@@ -353,12 +385,32 @@ Respond with ONLY valid JSON (no markdown):
                     f"Episode produced empty trajectory for task {task_name}"
                 )
 
+            success = True
             logger.info(f"Episode {task_name}: {len(trajectory.steps)} steps")
             return trajectory
 
         except Exception as e:
             logger.error(f"Episode failed for {task_name}: {e}")
             raise
+
+        finally:
+            if hasattr(env, "close"):
+                try:
+                    env.close()
+                except Exception:
+                    pass
+
+            if "trajectory" in locals() and isinstance(trajectory, Trajectory):
+                final_steps = len(trajectory.steps)
+                rewards_csv = ",".join(f"{s.reward:.2f}" for s in trajectory.steps)
+            else:
+                final_steps = len(step_rewards)
+                rewards_csv = ",".join(f"{r:.2f}" for r in step_rewards)
+
+            print(
+                f"[END] success={str(success).lower()} "
+                f"steps={final_steps} rewards={rewards_csv}"
+            )
 
     def evaluate_task(
         self,
