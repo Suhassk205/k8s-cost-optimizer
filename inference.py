@@ -45,7 +45,7 @@ class _InferenceConfig:
 
     # LLM request parameters
     LLM_TEMPERATURE: float = 0.7
-    LLM_MAX_TOKENS: int = 100
+    LLM_MAX_TOKENS: int = 500  # Increased from 100 to accommodate reasoning mode + complete JSON response
     LLM_TIMEOUT_SEC: int = 30
 
     # Episode parameters
@@ -302,9 +302,23 @@ Respond with ONLY valid JSON (no markdown):
 
             # Parse response (handle markdown code blocks)
             response_content = response.choices[0].message.content
+            
+            # FALLBACK: Use reasoning field if content is None (reasoning mode / token limit case)
             if response_content is None:
-                logger.error(f"[ERROR] API returned None content. Full response: {response.model_dump() if hasattr(response, 'model_dump') else response}")
-                raise ValueError("LLM returned empty response (content is None)")
+                logger.warning(f"Content is None. Model may be in reasoning mode. Checking reasoning field...")
+                if hasattr(response.choices[0].message, 'reasoning') and response.choices[0].message.reasoning:
+                    reasoning_text = response.choices[0].message.reasoning
+                    logger.debug(f"[Reasoning Fallback] Attempting to extract action from reasoning: {reasoning_text[:200]}...")
+                    
+                    # Try to extract action from reasoning (heuristic approach)
+                    # Look for action names in the reasoning text
+                    for action in ActionType:
+                        if action.value in reasoning_text:
+                            logger.info(f"[Fallback Success] Extracted action from reasoning: {action.value}")
+                            return Action(action_type=action)
+                
+                logger.error(f"[ERROR] API returned None content. Reasoning also empty/no action found. Full response: {response.model_dump() if hasattr(response, 'model_dump') else response}")
+                raise ValueError("LLM returned empty response (content is None and no action found in reasoning)")
             
             response_text = response_content.strip()
             logger.debug(f"[Response Text] {response_text[:500]}")
