@@ -1,0 +1,41 @@
+﻿System.Management.Automation.RemoteException
+============================================================
+PRE-SUBMISSION VALIDATION
+============================================================
+System.Management.Automation.RemoteException
+[Import validation]
+  [PASS] All modules import successfully
+System.Management.Automation.RemoteException
+[Environment structure]
+  [PASS] KubeCostEnv has all required methods
+System.Management.Automation.RemoteException
+[openenv.yaml compliance]
+  [PASS] openenv.yaml valid (kubecost-gym v3.0, 3 tasks)
+System.Management.Automation.RemoteException
+[Grader bounds]
+ColdStartGrader: received empty trajectory
+EfficientSqueezeGrader: received empty trajectory
+EntropyStormGrader: received empty trajectory
+  [PASS] ColdStartGrader: score=1.00
+  [PASS] EfficientSqueezeGrader: score=1.00
+  [PASS] EntropyStormGrader: score=0.50
+System.Management.Automation.RemoteException
+[inference.py location]
+  [PASS] inference.py exists in root directory
+System.Management.Automation.RemoteException
+[Requirements (OpenAI)]
+  [PASS] requirements.txt uses OpenAI (not Google Gemini)
+System.Management.Automation.RemoteException
+============================================================
+VALIDATION SUMMARY
+============================================================
+  Γ£ô PASS: Import validation
+  Γ£ô PASS: Environment structure
+  Γ£ô PASS: openenv.yaml compliance
+  Γ£ô PASS: Grader bounds
+  Γ£ô PASS: inference.py location
+  Γ£ô PASS: Requirements (OpenAI)
+System.Management.Automation.RemoteException
+Total: 6/6 checks passed
+System.Management.Automation.RemoteException
+Γ£ô All validation checks passed!
