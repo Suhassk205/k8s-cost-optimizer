@@ -1,0 +1,50 @@
+# .dockerignore
+# Exclude files that should not be in the Docker build context
+
+# Python virtual environments (large, platform-specific)
+venv/
+.venv/
+env/
+.env/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Package manager artifacts
+uv.lock
+pyproject.toml
+.python-version
+
+# Local dev / validation artifacts
+validate_local.py
+validate_local.py
+run_validate.ps1
+val_out.txt
+validation_run.txt
+validation_run_ascii.txt
+validation_output.txt
+validation_report*.txt
+
+# Git
+.git/
+.gitignore
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Docs (not needed at runtime)
+SCAFFOLDING_MANUAL.md
+DEPLOYMENT.md
+GUIDELINES.md
+PREREQUISITES.md
+
+# Tests
+tests/
+*.test.py
