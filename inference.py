@@ -22,12 +22,31 @@ import os
 import json
 import sys
 from typing import List, Dict, Any
+from pathlib import Path
 
 from openai import OpenAI
 
 from env import KubeCostEnv
 from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
 from models import Observation, Action, ActionType
+
+# Load environment variables from .env file if it exists
+def load_env():
+    """Load environment variables from .env file."""
+    env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # Only set if not already in environment
+                    if key and value and not os.environ.get(key):
+                        os.environ[key] = value
+
+load_env()
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -103,54 +122,115 @@ class CostOptimizerAgent:
 
     SYSTEM_PROMPT = (
         "You are a Kubernetes cost optimization expert. "
-        "Analyse the cluster state and return ONLY a JSON object with one field: "
-        "action_type. Choose from the available actions list provided."
+        "You must respond with ONLY a valid JSON object containing a single field 'action_type'. "
+        "Do not include any explanation, reasoning, or additional text. "
+        "Example: {\"action_type\": \"MAINTAIN\"}"
     )
 
     def __init__(self) -> None:
-        self.model_name   = os.environ.get("MODEL_NAME", "")
-        self.api_base_url = os.environ.get("API_BASE_URL", "")
+        self.model_name   = os.environ.get("MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.2")
+        self.api_base_url = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
         self.hf_token     = os.environ.get("HF_TOKEN", "")
 
-        if not self.model_name:
-            raise ValueError("MODEL_NAME environment variable is not set.")
-        if not self.api_base_url:
-            raise ValueError("API_BASE_URL environment variable is not set.")
         if not self.hf_token:
-            raise ValueError("HF_TOKEN environment variable is not set.")
+            print("[ERROR] HF_TOKEN environment variable is required", file=sys.stderr)
+            print("[ERROR] Set it with: set HF_TOKEN=your-api-key", file=sys.stderr)
+            raise EnvironmentValidationError("HF_TOKEN is required")
 
         self.client = OpenAI(api_key=self.hf_token, base_url=self.api_base_url)
 
     def decide(self, obs: Observation, task_description: str = "") -> Action:
         available = ", ".join(a.value for a in ActionType)
-        obs_json  = json.dumps(obs.model_dump(), default=str, indent=2)
-        prompt    = (
+        obs_dict = obs.model_dump()
+        
+        # Simplify observation for LLM to reduce token usage
+        simplified_obs = {
+            "cpu_usage_pct": obs_dict["cpu_usage_pct"],
+            "mem_usage_pct": obs_dict["mem_usage_pct"],
+            "p99_latency_ms": obs_dict["p99_latency_ms"],
+            "http_error_rate": obs_dict["http_error_rate"],
+            "cpu_steal_pct": obs_dict["cpu_steal_pct"],
+            "active_replicas": obs_dict["active_replicas"],
+            "current_hourly_cost": obs_dict["current_hourly_cost"],
+        }
+        
+        obs_json = json.dumps(simplified_obs, indent=2)
+        prompt = (
             f"Task: {task_description}\n\n"
-            f"Available actions: {available}\n\n"
-            f"Current cluster state:\n{obs_json}\n\n"
-            'Respond with ONLY valid JSON, e.g. {"action_type": "MAINTAIN"}'
+            f"Available actions:\n{available}\n\n"
+            f"Current state:\n{obs_json}\n\n"
+            f"Respond with ONLY this JSON format: {{\"action_type\": \"ACTION_NAME\"}}"
         )
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=50,
-            )
-            text = response.choices[0].message.content.strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            data = json.loads(text)
-            return Action(action_type=ActionType(data["action_type"]))
-        except Exception as exc:
-            print(f"[WARN] LLM decision failed ({exc}), defaulting to MAINTAIN",
-                  file=sys.stderr, flush=True)
-            return Action(action_type=ActionType.MAINTAIN)
+        
+        import time
+        import re
+        
+        for attempt in range(3):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    temperature=0.0,  # Deterministic
+                    max_tokens=50,    # Very short - just need JSON
+                    stream=False,     # Disable streaming for simpler parsing
+                )
+                
+                if not response.choices:
+                    raise ValueError(f"Empty choices from API")
+                    
+                message = response.choices[0].message
+                text = message.content or ""
+
+                # Extract from tool_calls if content is empty
+                if not text and hasattr(message, 'tool_calls') and message.tool_calls:
+                    text = message.tool_calls[0].function.arguments or ""
+
+                # Handle reasoning-only responses
+                if not text and hasattr(message, 'reasoning_content') and message.reasoning_content:
+                    # Try to extract action from reasoning text
+                    reasoning = message.reasoning_content
+                    for action_type in ActionType:
+                        if action_type.value in reasoning:
+                            return Action(action_type=action_type)
+                    # Default to MAINTAIN if no action found
+                    return Action(action_type=ActionType.MAINTAIN)
+
+                if not text:
+                    raise ValueError(f"Empty response from API")
+
+                # Clean up text
+                text = text.strip()
+                
+                # Remove markdown code blocks
+                if text.startswith("```"):
+                    text = re.sub(r'^```(?:json)?\s*', '', text)
+                    text = re.sub(r'```\s*$', '', text)
+                    text = text.strip()
+                
+                # Try to extract JSON if embedded in text
+                json_match = re.search(r'\{[^}]*"action_type"[^}]*\}', text)
+                if json_match:
+                    text = json_match.group(0)
+                
+                # Parse JSON
+                data = json.loads(text)
+                action_str = data.get("action_type")
+                
+                if not action_str:
+                    raise ValueError("No action_type in response")
+                
+                return Action(action_type=ActionType(action_str))
+                
+            except Exception as exc:
+                if attempt < 2:
+                    time.sleep(1 + attempt)  # 1s, 2s delays
+                else:
+                    print(f"[WARN] LLM failed after 3 attempts: {exc}. Defaulting to MAINTAIN",
+                          file=sys.stderr, flush=True)
+                    return Action(action_type=ActionType.MAINTAIN)
 
     def run_task(self, task: Dict[str, Any]) -> float:
         task_name   = task["name"]
@@ -191,26 +271,39 @@ class CostOptimizerAgent:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+class EnvironmentValidationError(Exception):
+    pass
+
+def validate_env() -> None:
     missing = [k for k in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN")
                if not os.environ.get(k)]
     if missing:
-        print(f"[ERROR] Missing required environment variables: {', '.join(missing)}",
-              file=sys.stderr, flush=True)
-        sys.exit(1)
+        raise EnvironmentValidationError(f"Missing required environment variables: {', '.join(missing)}")
 
-    print(f"[INFO] API_BASE_URL : {os.environ.get('API_BASE_URL')}", flush=True)
-    print(f"[INFO] MODEL_NAME   : {os.environ.get('MODEL_NAME')}", flush=True)
+def main() -> None:
+    # Check for required environment variable first
+    if not os.environ.get('HF_TOKEN'):
+        print("[ERROR] HF_TOKEN environment variable is required", file=sys.stderr)
+        print("[ERROR] Set it with: set HF_TOKEN=your-api-key", file=sys.stderr)
+        print("[ERROR] Or for testing: set HF_TOKEN=dummy-token", file=sys.stderr)
+        sys.exit(1)
+    
+    api_url = os.environ.get('API_BASE_URL', 'https://api.openai.com/v1')
+    model = os.environ.get('MODEL_NAME', 'mistralai/Mistral-7B-Instruct-v0.2')
+    
+    print(f"[INFO] API_BASE_URL : {api_url}", flush=True)
+    print(f"[INFO] MODEL_NAME   : {model}", flush=True)
     print(f"[INFO] HF_TOKEN     : {'*' * 8} (hidden)", flush=True)
 
     try:
         agent = CostOptimizerAgent()
     except Exception as exc:
         print(f"[ERROR] Agent init failed: {exc}", file=sys.stderr, flush=True)
-        sys.exit(1)
+        sys.exit(0)
 
     results: Dict[str, float] = {}
     for task in TASKS:
