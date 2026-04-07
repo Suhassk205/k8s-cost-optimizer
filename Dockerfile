@@ -1,9 +1,9 @@
 # Dockerfile
 # KubeCost-Gym Docker Image
-# Base: python:3.10-slim (spec requirement)
+# Base: pinned Python 3.10 slim for stable Docker builds
 # Deployment: HuggingFace Spaces with cpu-basic hardware
 
-FROM python:3.10-slim
+FROM python:3.10.18-slim-bullseye
 
 # Set working directory
 WORKDIR /app
@@ -40,6 +40,7 @@ RUN python -c "import yaml; yaml.safe_load(open('openenv.yaml'))" || (echo "ERRO
 # Expose port (HuggingFace Spaces standard)
 EXPOSE 7860
 
-# Default command: run FastAPI HTTP server (OpenEnv REST API on /reset, /step, /state)
-# inference.py remains in root for static file validation by the checker
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+# Use Astral UV runtime to launch the application
+ENV PORT=7860
+ENV SERVER_NAME=0.0.0.0
+CMD ["uv", "run", "python", "server/app.py"]
