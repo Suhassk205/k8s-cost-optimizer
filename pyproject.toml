@@ -16,9 +16,9 @@ dependencies = [
 
 [project.scripts]
 # Application entry point - enables running via: uv run kubecost-gym
-# or: python -m server.app
-kubecost-gym = "server.app:main"
-server = "server.app:main"
+# Uses the simpler app.py which has custom endpoints (avoids openenv-core auto-routing bugs)
+kubecost-gym = "app:main"
+server = "app:main"
 
 [dependency-groups]
 dev = [

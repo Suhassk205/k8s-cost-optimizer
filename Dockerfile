@@ -52,4 +52,5 @@ ENV PORT=7860
 ENV SERVER_NAME=0.0.0.0
 
 # Launch application using uv run for correct environment management
-CMD ["uv", "run", "python", "server/app.py"]
+# Use the simpler app.py instead of server/app.py to avoid openenv-core auto-routing bugs
+CMD ["uv", "run", "python", "app.py"]

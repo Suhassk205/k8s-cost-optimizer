@@ -83,6 +83,34 @@ app = create_fastapi_app(
 app.state.logger = logger
 
 
+# ===== Patch /state endpoint to fix openenv-core issue =====
+# openenv-core's route handler has a bug where it passes the method
+# reference instead of calling it. We override the /state endpoint here.
+
+@app.get("/state")
+async def get_state():
+    """Get current environment state.
+
+    This endpoint overrides the openenv-core auto-generated one to work around
+    a bug in how it calls the state() method.
+    """
+    # Get or create the current environment session
+    # openenv-core stores sessions in app.state internally
+    # For simplicity, we create a default environment if none exists
+    if not hasattr(app.state, 'env'):
+        app.state.env = create_env()
+        logger.info("Created default environment for state endpoint")
+
+    try:
+        state_obj = app.state.env.state()
+        return state_obj.model_dump()
+    except Exception as e:
+        logger.error(f"Error getting state: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.on_event("startup")
 async def startup_event():
     """Validate environment variables on startup."""

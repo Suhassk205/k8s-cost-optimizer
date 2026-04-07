@@ -62,10 +62,14 @@ class ActionType(str, Enum):
 
 class Observation(BaseModel):
     """Current environment state (all fields observable by agent).
-    
+
     Reference: PROJECT_SPEC.md §4 Observation Space
+
+    OpenEnv Compatibility: Includes reward and done fields required by openenv-core
+    serialization (these are not part of the observable state but are needed for
+    the reset() response format).
     """
-    
+
     cpu_usage_pct: float = Field(
         ge=0, le=100,
         description="Cluster-wide CPU utilization [0-100%]"
@@ -103,6 +107,14 @@ class Observation(BaseModel):
     )
     node_bin_density: conlist(confloat(ge=0.0, le=1.0), min_length=10, max_length=10) = Field(
         description="Per-node packing ratio; fixed 10-element vector [0-1]×10"
+    )
+    reward: float = Field(
+        default=0.0,
+        description="Reward signal for the step (OpenEnv reset response compatibility)"
+    )
+    done: bool = Field(
+        default=False,
+        description="Episode termination flag (OpenEnv reset response compatibility)"
     )
 
     model_config = ConfigDict(use_enum_values=True)
