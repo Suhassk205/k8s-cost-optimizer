@@ -1,0 +1,19 @@
+# requirements.txt
+# Runtime dependencies for KubeCost-Gym
+# Must stay in sync with pyproject.toml
+
+# LLM client (inference.py)
+openai>=2.30.0
+
+# Pydantic models (models.py)
+pydantic>=2.12.5
+
+# OpenEnv environment interface (env.py)
+openenv-core>=0.2.2
+
+# YAML config parsing
+PyYAML>=6.0.3
+
+# Server (app.py)
+fastapi>=0.135.3
+uvicorn>=0.42.0
