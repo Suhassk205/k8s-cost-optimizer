@@ -1266,7 +1266,7 @@ wheels = [
 [[package]]
 name = "k8s-cost-optimizer"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "gradio" },

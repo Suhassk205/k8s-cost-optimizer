@@ -13,7 +13,7 @@ Reference: PROJECT_SPEC.md §3 Phase 2 Contract Specification
 from enum import Enum
 from typing import List
 
-from pydantic import BaseModel, Field, confloat, conlist
+from pydantic import BaseModel, Field, confloat, conlist, ConfigDict
 
 __all__ = [
     "NodeSizeClass",
@@ -105,9 +105,7 @@ class Observation(BaseModel):
         description="Per-node packing ratio; fixed 10-element vector [0-1]×10"
     )
 
-    class Config:
-        """Use enum values (not names) in JSON serialization."""
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # ===== ACTIONS (Agent decisions) =====
@@ -116,9 +114,7 @@ class Action(BaseModel):
     """Agent action selection."""
     action_type: ActionType = Field(description="Selected action from ActionType enum")
 
-    class Config:
-        """Allow enum values."""
-        use_enum_values = False
+    model_config = ConfigDict(use_enum_values=False)
 
 
 # ===== ENVIRONMENT STATE (Internal representation) =====
@@ -145,9 +141,7 @@ class EnvState(BaseModel):
         description="Previous-step steal % for proactive bonus calculation [0-1]"
     )
 
-    class Config:
-        """Use enum values in JSON serialization."""
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # ===== TRAJECTORY (For grading) =====
@@ -169,9 +163,7 @@ class TrajectoryStep(BaseModel):
         description="Metadata dict"
     )
 
-    class Config:
-        """Use enum values in JSON serialization."""
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class Trajectory(BaseModel):
@@ -231,8 +223,7 @@ class TraceObservation(BaseModel):
         description="Baseline node packing ratio vector"
     )
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # ===== TRACE DATA (For loading from JSON files) =====

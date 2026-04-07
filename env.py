@@ -11,7 +11,8 @@ Reference: PROJECT_SPEC.md §2 OpenEnv Interface, §3 Reward Spec, §4 Environme
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
+from openenv.core import Environment
 
 from models import (
     Observation,
@@ -266,7 +267,7 @@ def get_replica_delta(action_type: ActionType) -> int:
     return scale_map.get(action_type, 0)
 
 
-class KubeCostEnv:
+class KubeCostEnv(Environment):
     """Kubernetes cost optimization environment.
 
     Implements OpenEnv interface for RL agents:
@@ -321,7 +322,7 @@ class KubeCostEnv:
     # OpenEnv Public Interface
     # ------------------------------------------------------------------
 
-    def reset(self) -> Observation:
+    def reset(self, **kwargs) -> Observation:
         """
         Reset environment to initial state.
 
@@ -429,6 +430,14 @@ class KubeCostEnv:
             node_size=self._node_size,
             prev_steal_pct=self._prev_steal_pct,
         )
+
+    def render(self, mode: str = "human") -> Any:
+        """Render environment state (stub)."""
+        return None
+
+    def close(self) -> None:
+        """Cleanup resources (stub)."""
+        pass
 
     # ------------------------------------------------------------------
     # Internal helpers

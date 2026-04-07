@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # ===== OpenEnv Environment Factory =====
 
-def create_env() -> KubeCostEnv:
+def create_env(**kwargs) -> KubeCostEnv:
     """
     Factory function for creating KubeCostEnv instances.
     
@@ -46,12 +46,25 @@ def create_env() -> KubeCostEnv:
     an Environment instance. This allows the server to create fresh
     environment instances for each session/reset request.
     
+    Args:
+        **kwargs: Optional configuration (e.g. trace_path, task_name)
+        
     Returns:
         KubeCostEnv: A new environment instance
     """
     # Use default trace path for initial environment
-    # Clients can override via reset(trace_path=...) on /reset endpoint
-    env = KubeCostEnv(trace_path="traces/trace_v1_coldstart.json")
+    # Clients can override via kwargs on /reset endpoint
+    trace_path = kwargs.get("trace_path", "traces/trace_v1_coldstart.json")
+    
+    # Handle task_name mapping if provided
+    task_name = kwargs.get("task_name")
+    if task_name == "efficient_squeeze":
+        trace_path = "traces/trace_v1_squeeze.json"
+    elif task_name == "entropy_storm":
+        trace_path = "traces/trace_v1_entropy.json"
+        
+    logger.info(f"Creating KubeCostEnv with trace: {trace_path}")
+    env = KubeCostEnv(trace_path=trace_path)
     return env
 
 
