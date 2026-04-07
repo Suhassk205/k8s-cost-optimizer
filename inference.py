@@ -22,12 +22,27 @@ import os
 import json
 import sys
 from typing import List, Dict, Any
+from pathlib import Path
 
 from openai import OpenAI
 
 from env import KubeCostEnv
 from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
 from models import Observation, Action, ActionType
+
+# Load environment variables from .env file if it exists
+def load_env():
+    env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        os.environ.setdefault(key.strip(), value.strip())
+
+load_env()
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -138,8 +153,11 @@ class CostOptimizerAgent:
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=0.3,
-                max_tokens=50,
+                max_tokens=200,  # Increased from 50 to ensure complete response
             )
+            if not response.choices or not response.choices[0].message.content:
+                raise ValueError("Empty response from API")
+
             text = response.choices[0].message.content.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
