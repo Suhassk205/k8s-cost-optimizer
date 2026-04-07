@@ -15,8 +15,6 @@ __pycache__/
 .Python
 
 # Package manager artifacts
-uv.lock
-pyproject.toml
 .python-version
 
 # Local dev / validation artifacts
