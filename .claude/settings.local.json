@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(uv run:*)",
-      "Bash(docker build:*)"
+      "Bash(docker build:*)",
+      "Bash(python -m pytest test_full.py -v)",
+      "Bash(python app.py)",
+      "Bash(curl -X POST http://localhost:7860/reset -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(pip install:*)",
+      "Bash(uv sync:*)",
+      "Bash(curl -v http://127.0.0.1:7860/reset -X POST -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(pkill -f \"python.*app\")"
     ]
   }
 }
