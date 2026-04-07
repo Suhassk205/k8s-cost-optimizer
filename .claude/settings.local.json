@@ -9,7 +9,8 @@
       "Bash(pip install:*)",
       "Bash(uv sync:*)",
       "Bash(curl -v http://127.0.0.1:7860/reset -X POST -H \"Content-Type: application/json\" -d '{}')",
-      "Bash(pkill -f \"python.*app\")"
+      "Bash(pkill -f \"python.*app\")",
+      "Bash(ls -lh *.py)"
     ]
   }
 }
